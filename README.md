@@ -9,48 +9,59 @@ It does not clone or build application repositories.
 
 ## Deployment flow
 
+```text
 GitLab / CodeBuild
-    |
-    | release.tar.gz
-    | .env
-    v
-S3
-    |
-    v
-auto.deploy
-    |
-    +-- download
-    +-- validate
-    +-- prepare
-    +-- migrations
-    +-- atomic htdocs switch
-    +-- systemd restart
-    +-- health check
-    +-- rollback on failure
+        |
+        | release.tar.gz
+        | .env
+        v
+       S3
+        |
+        v
+   auto.deploy
+        |
+        +-- download
+        +-- validate
+        +-- prepare
+        +-- migrations
+        +-- atomic htdocs switch
+        +-- systemd restart
+        +-- health check
+        +-- rollback on failure
+```
 
 ## Layout
 
+```text
 auto.deploy/
 ├── deploy.sh
+├── .env
+├── .env.example
+├── .gitignore
+├── README.md
 ├── inc/
 │   ├── functions.sh
 │   └── notifications.sh
 ├── notifs/
 │   └── telegram.sh
-├── tech/
-│   ├── generic.sh
-│   └── laravel.sh
-├── .env
-└── .env.example
+└── tech/
+    ├── generic.sh
+    └── laravel.sh
+```
 
 Application directories:
 
+```text
 project/
 ├── auto.deploy/
 ├── builds/
-├── htdocs -> builds/<commit>
+│   ├── <commit-sha-1>/
+│   ├── <commit-sha-2>/
+│   └── <commit-sha-3>/
+├── htdocs -> builds/<current-commit-sha>
 ├── static/
 └── server.logs/
+```
 
 ## Artifact contract
 
