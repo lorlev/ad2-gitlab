@@ -1,0 +1,6 @@
+.env
+deploy.lock
+
+.DS_Store
+.idea/
+.vscode/
