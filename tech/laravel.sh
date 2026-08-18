@@ -108,6 +108,11 @@ TechBeforeSwitch() {
 		"$path" \
 		optimize:clear
 
+	if IsYes "${LARAVEL_FILAMENT_ASSETS:-N}"; then
+		OutputLog "Laravel filament:assets"
+		RunArtisan filament:assets
+	fi
+
 	if IsYes "${LARAVEL_MIGRATE:-Y}"; then
 
 		OutputLog "Laravel migrate"
