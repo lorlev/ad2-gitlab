@@ -1,0 +1,289 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  AWS_REGION: "eu-central-1"
+
+  DEPLOY_SSM_DOCUMENT: "AD2-AutoDeploy"
+  DEPLOY_INSTANCE_ID: "i-0123456789abcdef0"
+  DEPLOY_AUTO_DIR: "/datastore/web/test.example.com/auto.deploy"
+
+  DEPLOY_S3_BUCKET: "example-deploy-artifacts"
+  DEPLOY_S3_PREFIX: "example-app/test"
+
+  DEPLOY_EXTERNAL_HEALTH_URL: "https://test.example.com/up"
+
+default:
+  tags:
+    - codebuild-example-app-runner-$CI_PROJECT_ID-$CI_PIPELINE_IID-$CI_JOB_NAME
+    - instance-size:small
+
+build-test-release:
+  stage: build
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "test"'
+
+  environment:
+    name: test
+    action: prepare
+
+  before_script:
+    - |
+      phpenv global "$PHP_84_VERSION"
+      hash -r
+
+      echo "===== BUILD PHP ====="
+      php -v
+
+      php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 4) { fwrite(STDERR, "ERROR: PHP 8.4 required\n"); exit(1); }'
+
+  script:
+    - |
+      set -Eeuo pipefail
+
+      echo "===== BUILD INFO ====="
+      echo "Project:     $CI_PROJECT_PATH"
+      echo "Environment: TEST"
+      echo "Branch:      $CI_COMMIT_BRANCH"
+      echo "Commit:      $CI_COMMIT_SHA"
+
+      echo
+      echo "===== SAFETY CHECK ====="
+
+      if [ -z "${APP_KEY:-}" ]; then
+        echo "ERROR: APP_KEY is required"
+        exit 1
+      fi
+
+      if [ -z "${DB_HOST:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
+        echo "ERROR: database configuration is incomplete"
+        exit 1
+      fi
+
+      echo "Safety check: OK"
+
+      echo
+      echo "===== CREATE APPLICATION .ENV ====="
+
+      cp .env.example /tmp/app.env
+
+      set_env() {
+        KEY="$1"
+        VALUE="$2"
+        sed -i "/^${KEY}=/d" /tmp/app.env
+        printf '%s=%s\n' "$KEY" "$VALUE" >> /tmp/app.env
+      }
+
+      set_env APP_ENV "$APP_ENV"
+      set_env APP_DEBUG "$APP_DEBUG"
+      set_env APP_URL "$APP_URL"
+      set_env APP_KEY "$APP_KEY"
+
+      set_env DB_HOST "$DB_HOST"
+      set_env DB_DATABASE "$DB_DATABASE"
+      set_env DB_USERNAME "$DB_USERNAME"
+      set_env DB_PASSWORD "$DB_PASSWORD"
+
+      # Add every project-specific setting explicitly, for example:
+      # set_env API_TOKEN "$API_TOKEN"
+
+      chmod 600 /tmp/app.env
+
+      echo "Application .env created."
+
+      echo
+      echo "===== INSTALL COMPOSER ====="
+
+      php -r "copy('https://getcomposer.org/installer', '/tmp/composer-setup.php');"
+      php /tmp/composer-setup.php \
+        --install-dir=/tmp \
+        --filename=composer
+
+      echo
+      echo "===== COMPOSER INSTALL ====="
+
+      /tmp/composer install \
+        --no-dev \
+        --prefer-dist \
+        --no-interaction \
+        --no-progress \
+        --optimize-autoloader
+
+      echo
+      echo "===== LARAVEL CHECK ====="
+      php artisan --version
+
+      echo
+      echo "===== CREATE RELEASE ====="
+
+      tar \
+        --exclude='./.git' \
+        --exclude='./.env' \
+        -czf /tmp/release.tar.gz \
+        .
+
+      RELEASE_KEY="$DEPLOY_S3_PREFIX/$CI_COMMIT_SHA/release.tar.gz"
+      ENV_KEY="$DEPLOY_S3_PREFIX/$CI_COMMIT_SHA/.env"
+
+      echo
+      echo "===== UPLOAD RELEASE ====="
+
+      aws s3 cp \
+        /tmp/release.tar.gz \
+        "s3://$DEPLOY_S3_BUCKET/$RELEASE_KEY" \
+        --region "$AWS_REGION"
+
+      aws s3 cp \
+        /tmp/app.env \
+        "s3://$DEPLOY_S3_BUCKET/$ENV_KEY" \
+        --region "$AWS_REGION"
+
+      echo
+      echo "===== VERIFY RELEASE ====="
+
+      aws s3api head-object \
+        --bucket "$DEPLOY_S3_BUCKET" \
+        --key "$RELEASE_KEY" \
+        --region "$AWS_REGION" \
+        >/dev/null
+
+      aws s3api head-object \
+        --bucket "$DEPLOY_S3_BUCKET" \
+        --key "$ENV_KEY" \
+        --region "$AWS_REGION" \
+        >/dev/null
+
+      echo
+      echo "===== BUILD COMPLETE ====="
+      echo "Commit:  $CI_COMMIT_SHA"
+      echo "Release: s3://$DEPLOY_S3_BUCKET/$RELEASE_KEY"
+      echo "Config:  s3://$DEPLOY_S3_BUCKET/$ENV_KEY"
+
+deploy-test:
+  stage: deploy
+  needs:
+    - build-test-release
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "test"'
+
+  environment:
+    name: test
+    url: https://test.example.com
+
+  resource_group: test
+
+  # During first commissioning only, uncomment:
+  # when: manual
+
+  script:
+    - |
+      set -Eeuo pipefail
+
+      echo "===== DEPLOY INFO ====="
+      echo "Project:     $CI_PROJECT_PATH"
+      echo "Environment: TEST"
+      echo "Instance:    $DEPLOY_INSTANCE_ID"
+      echo "Document:    $DEPLOY_SSM_DOCUMENT"
+      echo "Auto Deploy: $DEPLOY_AUTO_DIR"
+      echo "Commit:      $CI_COMMIT_SHA"
+
+      echo
+      echo "===== SEND SSM COMMAND ====="
+
+      COMMAND_ID="$(
+        aws ssm send-command \
+          --instance-ids "$DEPLOY_INSTANCE_ID" \
+          --document-name "$DEPLOY_SSM_DOCUMENT" \
+          --parameters \
+            "AutoDeployDir=$DEPLOY_AUTO_DIR,CommitSha=$CI_COMMIT_SHA" \
+          --comment "Deploy $CI_PROJECT_PATH $CI_COMMIT_SHORT_SHA" \
+          --region "$AWS_REGION" \
+          --query 'Command.CommandId' \
+          --output text
+      )"
+
+      echo "Command ID: $COMMAND_ID"
+
+      echo
+      echo "===== WAIT FOR DEPLOYMENT ====="
+
+      STATUS="Pending"
+
+      for ATTEMPT in $(seq 1 450); do
+        STATUS="$(
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$DEPLOY_INSTANCE_ID" \
+            --region "$AWS_REGION" \
+            --query 'Status' \
+            --output text \
+            2>/dev/null || echo "Pending"
+        )"
+
+        echo "[$ATTEMPT] Status: $STATUS"
+
+        case "$STATUS" in
+          Success|Failed|Cancelled|TimedOut)
+            break
+            ;;
+        esac
+
+        sleep 2
+      done
+
+      echo
+      echo "===== SERVER OUTPUT ====="
+
+      aws ssm get-command-invocation \
+        --command-id "$COMMAND_ID" \
+        --instance-id "$DEPLOY_INSTANCE_ID" \
+        --region "$AWS_REGION" \
+        --query 'StandardOutputContent' \
+        --output text || true
+
+      echo
+      echo "===== SERVER STDERR ====="
+
+      aws ssm get-command-invocation \
+        --command-id "$COMMAND_ID" \
+        --instance-id "$DEPLOY_INSTANCE_ID" \
+        --region "$AWS_REGION" \
+        --query 'StandardErrorContent' \
+        --output text || true
+
+      RESPONSE_CODE="$(
+        aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$DEPLOY_INSTANCE_ID" \
+          --region "$AWS_REGION" \
+          --query 'ResponseCode' \
+          --output text
+      )"
+
+      echo
+      echo "===== DEPLOY RESULT ====="
+      echo "Status:        $STATUS"
+      echo "Response code: $RESPONSE_CODE"
+
+      if [ "$STATUS" != "Success" ] || [ "$RESPONSE_CODE" != "0" ]; then
+        echo "ERROR: deployment failed"
+        exit 1
+      fi
+
+      echo
+      echo "===== EXTERNAL HEALTH CHECK ====="
+
+      curl -fsS \
+        --retry 5 \
+        --retry-delay 1 \
+        "$DEPLOY_EXTERNAL_HEALTH_URL" \
+        >/dev/null
+
+      echo "External health check: OK"
+      echo
+      echo "===== DEPLOYMENT SUCCEEDED ====="
+      echo "Commit: $CI_COMMIT_SHA"
+      echo "URL:    $DEPLOY_EXTERNAL_HEALTH_URL"
