@@ -111,6 +111,15 @@ TechBeforeSwitch() {
 			--force
 	fi
 
+	if IsYes "${LARAVEL_SEED:-N}"; then
+		OutputLog "Laravel db:seed"
+
+		RunArtisan \
+			"$path" \
+			db:seed \
+			--force
+	fi
+
 	OutputLog "Laravel optimize:clear"
 
 	RunArtisan \
