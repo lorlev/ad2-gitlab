@@ -120,6 +120,10 @@ TechBeforeSwitch() {
 	if IsYes "${LARAVEL_FILAMENT_ASSETS:-N}"; then
 		OutputLog "Laravel filament:assets"
 
+		chown -R \
+			"${APP_USER}:${APP_GROUP}" \
+			"$path/public"
+
 		RunArtisan \
 			"$path" \
 			filament:assets
