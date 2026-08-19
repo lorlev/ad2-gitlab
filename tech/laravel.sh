@@ -4,16 +4,21 @@ RunArtisan() {
 	local path="$1"
 	shift
 
-	(
-		cd "$path"
+	local logs_dir
+	logs_dir="$(dirname "$(dirname "$path")")/server.logs"
 
-		runuser \
-			-u "${APP_USER:-www-data}" \
-			-- \
-			"${PHP_BIN:-/usr/bin/php}" \
-			artisan \
-			"$@"
-	)
+	mkdir -p "$logs_dir"
+
+	{
+		echo
+		echo "======================================================"
+		echo "$(date '+%Y-%m-%d %H:%M:%S') php artisan $*"
+		echo "======================================================"
+	} >> "$logs_dir/artisan.output.log"
+
+	runuser -u "$APP_USER" -- \
+		"$PHP_BIN" "$path/artisan" "$@" \
+		2>&1 | tee -a "$logs_dir/artisan.output.log"
 }
 
 TechValidate() {
