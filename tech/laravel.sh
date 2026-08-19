@@ -102,19 +102,7 @@ TechPrepare() {
 TechBeforeSwitch() {
 	local path="$1"
 
-	OutputLog "Laravel optimize:clear"
-
-	RunArtisan \
-		"$path" \
-		optimize:clear
-
-	if IsYes "${LARAVEL_FILAMENT_ASSETS:-N}"; then
-		OutputLog "Laravel filament:assets"
-		RunArtisan filament:assets
-	fi
-
 	if IsYes "${LARAVEL_MIGRATE:-Y}"; then
-
 		OutputLog "Laravel migrate"
 
 		RunArtisan \
@@ -123,8 +111,21 @@ TechBeforeSwitch() {
 			--force
 	fi
 
-	if IsYes "${LARAVEL_CONFIG_CACHE:-Y}"; then
+	OutputLog "Laravel optimize:clear"
 
+	RunArtisan \
+		"$path" \
+		optimize:clear
+
+	if IsYes "${LARAVEL_FILAMENT_ASSETS:-N}"; then
+		OutputLog "Laravel filament:assets"
+
+		RunArtisan \
+			"$path" \
+			filament:assets
+	fi
+
+	if IsYes "${LARAVEL_CONFIG_CACHE:-Y}"; then
 		OutputLog "Laravel config:cache"
 
 		RunArtisan \
@@ -133,7 +134,6 @@ TechBeforeSwitch() {
 	fi
 
 	if IsYes "${LARAVEL_ROUTE_CACHE:-N}"; then
-
 		OutputLog "Laravel route:cache"
 
 		RunArtisan \
