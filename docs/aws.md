@@ -68,14 +68,12 @@ If one server hosts several applications, expand the object resources only to th
 
 Confirm SSM Agent is installed/running and that the instance appears in Systems Manager managed nodes.
 
-On Linux, useful checks are:
-
 ```bash
 systemctl status amazon-ssm-agent --no-pager
 amazon-ssm-agent -version
 ```
 
-The generic document in this guide uses SSM environment-variable parameter interpolation. Use a current SSM Agent; AWS documents this feature for Agent 3.3.2746.0 and later.
+The generic document in this guide uses SSM environment-variable parameter interpolation. Use a current SSM Agent.
 
 ## 3. CodeBuild-hosted GitLab runner
 
@@ -88,7 +86,7 @@ Runner location: Repository
 Repository: <gitlab-namespace>/<project>
 ```
 
-Connect the GitLab account/repository through the CodeBuild/CodeConnections flow. CodeBuild creates the integration required to start an ephemeral self-managed GitLab runner when a matching GitLab job is queued.
+Connect the GitLab account/repository through the CodeBuild/CodeConnections flow. CodeBuild starts an ephemeral self-managed GitLab runner when a matching GitLab job is queued.
 
 The GitLab job tag must start with:
 
@@ -102,11 +100,131 @@ The example pipeline also uses:
 instance-size:small
 ```
 
-Choose a larger CodeBuild compute size if the application build requires it.
+Choose a larger CodeBuild compute size only when the build actually needs it.
+
+## Shared CodeBuild service role
+
+Do not create a different IAM service role for every runner project unless separate trust boundaries require it. CodeBuild supports selecting an **Existing service role**, and AWS currently documents that one CodeBuild service role can work with up to **10 build projects**.
+
+A practical layout for 15 similar projects is therefore:
+
+```text
+codebuild-shared-runner-role-01  -> projects 1-10
+codebuild-shared-runner-role-02  -> projects 11-15
+```
+
+Projects sharing a role also share every AWS permission on that role. Only group projects that are operated by the same trusted team and are allowed to access the same deployment infrastructure.
+
+### Shared role trust policy
+
+Example trust policy for runner projects in one AWS account/region:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "codebuild.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceAccount": "<aws-account-id>"
+        },
+        "ArnLike": {
+          "aws:SourceArn": "arn:aws:codebuild:eu-central-1:<aws-account-id>:project/*-runner"
+        }
+      }
+    }
+  ]
+}
+```
+
+### Shared role baseline permissions
+
+A shared runner role usually needs:
+
+- CloudWatch Logs for the runner projects;
+- CodeBuild report-group permissions when reports are used;
+- the exact GitLab CodeConnection ARN(s);
+- S3 access to deployment artifacts;
+- `ssm:SendCommand` for `AD2-AutoDeploy` and intended EC2 instance(s);
+- `ssm:GetCommandInvocation` for result polling.
+
+Do not copy unrelated generated permissions such as CodePipeline artifact access when CodePipeline is not part of the architecture.
+
+For a group of projects intentionally sharing one deployment bucket, the deployment portion can look like:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DeploymentArtifacts",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject"
+      ],
+      "Resource": "arn:aws:s3:::example-deploy-artifacts/*"
+    },
+    {
+      "Sid": "DeploymentBucketLocation",
+      "Effect": "Allow",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::example-deploy-artifacts"
+    },
+    {
+      "Sid": "RunAutoDeploy",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:eu-central-1:<aws-account-id>:document/AD2-AutoDeploy",
+        "arn:aws:ec2:eu-central-1:<aws-account-id>:instance/i-0123456789abcdef0"
+      ]
+    },
+    {
+      "Sid": "ReadDeploymentResult",
+      "Effect": "Allow",
+      "Action": "ssm:GetCommandInvocation",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Narrow the S3 prefixes and instance ARNs further when projects do not need a shared deployment boundary.
+
+### Migrating existing CodeBuild projects to a shared role
+
+Change one non-production runner first, test it, then move already-working runners.
+
+```bash
+aws codebuild update-project \
+  --name "example-app-runner" \
+  --service-role "arn:aws:iam::<aws-account-id>:role/codebuild-shared-runner-role-01" \
+  --region eu-central-1
+```
+
+Verify all migrated projects:
+
+```bash
+aws codebuild batch-get-projects \
+  --names example-app-runner another-app-runner \
+  --region eu-central-1 \
+  --query 'projects[*].[name,serviceRole]' \
+  --output table
+```
+
+Run a real pipeline that covers GitLab checkout, S3 upload and SSM deployment before deleting old roles.
+
+After the migration, old CodeBuild-generated customer-managed policies may remain in IAM with `AttachmentCount=0`. Verify they have no attached users/groups/roles before deleting them.
 
 ## 4. CodeBuild S3 permissions
 
-Add an inline policy to the CodeBuild service role:
+If a project uses a dedicated role instead of a shared role, add an inline policy such as:
 
 ```json
 {
@@ -131,7 +249,7 @@ Add an inline policy to the CodeBuild service role:
 }
 ```
 
-The CI example uses `head-object` after upload, so `s3:GetObject` is required for verification.
+The CI example uses `head-object` after upload, so the role must be able to read/verify the uploaded object metadata.
 
 ## 5. Create the generic SSM document
 
@@ -186,7 +304,7 @@ CommitSha
 
 ## 6. Allow CodeBuild to invoke the document
 
-Add an inline policy to the CodeBuild service role. Replace account ID and instance ID:
+For a dedicated role, or as part of the shared role, grant:
 
 ```json
 {
@@ -211,7 +329,7 @@ Add an inline policy to the CodeBuild service role. Replace account ID and insta
 }
 ```
 
-Do **not** grant the pipeline permission to use the generic `AWS-RunShellScript` document if it does not need arbitrary remote shell execution. Restricting the role to `AD2-AutoDeploy` narrows what CI can execute on the instance.
+Do **not** grant the pipeline permission to use the generic `AWS-RunShellScript` document if it does not need arbitrary remote shell execution.
 
 ## 7. Network requirements
 

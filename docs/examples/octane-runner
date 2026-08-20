@@ -1,0 +1,16 @@
+#!/bin/bash
+
+set -Eeuo pipefail
+
+: "${PROJECT_DIR:?PROJECT_DIR is required}"
+: "${OCTANE_PORT:?OCTANE_PORT is required}"
+
+cd "${PROJECT_DIR}/htdocs"
+
+exec /usr/bin/php artisan octane:start \
+    --server=swoole \
+    --host=127.0.0.1 \
+    --port="${OCTANE_PORT}" \
+    --workers="${OCTANE_WORKERS:-1}" \
+    --task-workers="${OCTANE_TASK_WORKERS:-1}" \
+    >>"${PROJECT_DIR}/server.logs/octane.log" 2>&1

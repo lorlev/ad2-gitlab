@@ -1,15 +1,8 @@
 # Troubleshooting
 
-## GitLab job does not start in CodeBuild
+## CodeBuild runner job does not start
 
-Check:
-
-- CodeBuild project type is **Runner project**.
-- GitLab repository connection is authorized.
-- runner tag contains the exact CodeBuild project name.
-- webhook/integration exists and is enabled.
-
-Expected tag pattern:
+Check that the GitLab job tag exactly matches the CodeBuild runner project:
 
 ```text
 codebuild-example-app-runner-$CI_PROJECT_ID-$CI_PIPELINE_IID-$CI_JOB_NAME
@@ -23,12 +16,6 @@ Investigate only if your job itself requires `hostname`.
 
 ## Wrong PHP version in CodeBuild
 
-Symptom:
-
-```text
-PHP 8.x expected, another version is active
-```
-
 Do not rely on the image's default runtime. Explicitly select and verify the required version before Composer:
 
 ```bash
@@ -37,33 +24,29 @@ hash -r
 php -v
 ```
 
-For a newer PHP 8.4+ version, use the corresponding runtime available in the selected CodeBuild image and update the server to the same major/minor.
+Keep CI and EC2 on the same PHP major/minor.
 
 ## Composer says the lock file is out of date
 
-Example:
-
-```text
-The lock file is not up to date with the latest changes in composer.json
-```
-
-Fix this in development and commit the correct `composer.lock`. Do not solve it with `composer update` inside CI.
+Fix the lock file in development and commit it. Do not solve this with `composer update` inside CI.
 
 ## S3 upload fails with `AccessDenied`
 
 Check the **CodeBuild service role**, not the EC2 role.
 
-It needs:
+It needs the S3 actions required by the pipeline for the configured bucket/prefix. If multiple runner projects use a shared role, verify that the shared role contains the deployment permissions and that the project actually references that role.
 
-```text
-s3:PutObject
-s3:GetObject
-s3:GetBucketLocation
+Confirm the caller when necessary:
+
+```bash
+aws sts get-caller-identity
 ```
 
-for the configured bucket/prefix.
+For a shared role, the returned ARN should contain:
 
-Confirm `.gitlab-ci.yml` uses the same bucket and prefix as the IAM policy.
+```text
+assumed-role/codebuild-shared-runner-role/
+```
 
 ## EC2 cannot download release artifacts
 
@@ -86,6 +69,27 @@ arn:aws:ec2:<region>:<account-id>:instance/<instance-id>
 ```
 
 Do not accidentally edit the EC2 instance role when the denied caller is CodeBuild.
+
+## Old CodeBuild roles are deleted but generated policies remain
+
+CodeBuild-created customer-managed policies can remain after an old service role is removed.
+
+List likely policies and attachment counts:
+
+```bash
+aws iam list-policies \
+  --scope Local \
+  --query "Policies[?contains(PolicyName, 'runner')].[PolicyName,Arn,AttachmentCount]" \
+  --output table
+```
+
+Before deletion, confirm there are no attached identities:
+
+```bash
+aws iam list-entities-for-policy --policy-arn <policy-arn>
+```
+
+Delete only policies that are no longer used.
 
 ## `AD2-AutoDeploy` is `Creating`
 
@@ -147,6 +151,65 @@ artisan
 vendor/autoload.php
 ```
 
+and that the application `.env` required by the project was generated correctly in CI.
+
+## Fresh database fails during `optimize:clear`: cache table missing
+
+Typical error:
+
+```text
+SQLSTATE[42S02]: Base table or view not found ... cache ... doesn't exist
+```
+
+This happens when the application uses Laravel's database cache store and `optimize:clear` runs before the migration that creates the cache table.
+
+The framework order should be:
+
+```text
+migrate --force
+optional db:seed --force
+optimize:clear
+```
+
+Confirm the release contains the cache-table migration before retrying deployment.
+
+## `filament:assets` fails with `Permission denied`
+
+Filament writes published assets under the release `public/` directory. The runtime user executing Artisan must be able to write there.
+
+Check:
+
+```bash
+ls -ld /datastore/web/test.example.com/builds/<sha>/public
+```
+
+The framework should prepare the `public/` ownership for `APP_USER:APP_GROUP` before running `filament:assets`.
+
+## Filament/CSS/JS URLs are generated with `http://` behind an HTTPS ALB
+
+Symptom: the browser reaches the application over HTTPS, but generated assets contain:
+
+```text
+http://test.example.com/...
+```
+
+Check Nginx preserves the ALB header:
+
+```nginx
+proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+```
+
+Then configure Laravel trusted proxies in `bootstrap/app.php`:
+
+```php
+$middleware->trustProxies(
+    at: '*',
+    headers: Request::HEADER_X_FORWARDED_AWS_ELB,
+);
+```
+
+Redeploy so configuration/cache is rebuilt, then inspect generated URLs again.
+
 ## Permission errors in `storage` or `bootstrap/cache`
 
 Check server configuration:
@@ -168,15 +231,64 @@ ls -ld \
 
 The application runtime user must be able to write required Laravel directories.
 
+## Octane template service does not start
+
+Check the instance configuration:
+
+```bash
+cat /etc/octane/example-app-test.env
+```
+
+Expected fields:
+
+```text
+PROJECT_DIR=/datastore/web/test.example.com
+OCTANE_PORT=8001
+OCTANE_WORKERS=1
+OCTANE_TASK_WORKERS=1
+```
+
+Validate runner/template:
+
+```bash
+test -x /usr/local/bin/octane-runner
+bash -n /usr/local/bin/octane-runner
+systemd-analyze verify /etc/systemd/system/octane@.service
+systemctl status octane@example-app-test.service --no-pager
+```
+
+Check whether the port is already occupied by an old service:
+
+```bash
+ss -lntp | grep ':8001'
+```
+
+When migrating from a dedicated unit, stop the old service before starting the new template instance.
+
+## Octane log is not writable
+
+The template runner writes to:
+
+```text
+/datastore/web/test.example.com/server.logs/octane.log
+```
+
+Prepare it for the runtime user:
+
+```bash
+touch /datastore/web/test.example.com/server.logs/octane.log
+chown www-data:www-data /datastore/web/test.example.com/server.logs/octane.log
+```
+
 ## First local health check fails, second succeeds
 
-Immediately after `systemctl restart`, the application server may need a short startup interval. A first connection-refused followed by a successful retry is acceptable when `HEALTH_RETRIES` is configured.
+Immediately after `systemctl restart`, Octane may need a short startup interval. A first connection-refused followed by a successful retry is acceptable when `HEALTH_RETRIES` is configured.
 
 Persistent failure is not acceptable; inspect:
 
 ```bash
-systemctl status example-app-test.service --no-pager
-journalctl -u example-app-test.service -n 200 --no-pager
+systemctl status octane@example-app-test.service --no-pager
+tail -100 /datastore/web/test.example.com/server.logs/octane.log
 curl -v http://127.0.0.1:8001/up
 ```
 

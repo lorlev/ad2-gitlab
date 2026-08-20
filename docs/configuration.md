@@ -59,17 +59,19 @@ These values control Laravel release ownership/permissions and the expected runt
 
 ## Service and health check
 
+With the reusable Octane template:
+
 ```text
-SERVICE=example-app-test.service
+SERVICE=octane@example-app-test.service
 HEALTH_URL=http://127.0.0.1:8001/up
 HEALTH_RETRIES=10
 HEALTH_DELAY=1
 HEALTH_TIMEOUT=3
 ```
 
-`SERVICE` must match the systemd unit used by the application.
+`SERVICE` must match the systemd template instance used by the application.
 
-The health check should be local and application-aware. External health is checked separately by the CI deploy job.
+The health check should be local and application-aware. External health is checked separately by CI or infrastructure monitoring.
 
 ## PHP
 
@@ -77,23 +79,38 @@ The health check should be local and application-aware. External health is check
 PHP_BIN=/usr/bin/php
 ```
 
-The framework invokes the configured PHP CLI. The example documentation uses PHP 8.4; PHP 8.4+ can be used when the application and server support it.
+The framework invokes the configured PHP CLI. Keep the CI build and server on the same PHP major/minor version.
 
 ## Laravel lifecycle switches
 
 ```text
 LARAVEL_PERSIST_STORAGE=Y
 LARAVEL_MIGRATE=Y
+LARAVEL_SEED=N
+LARAVEL_FILAMENT_ASSETS=N
 LARAVEL_CONFIG_CACHE=Y
 LARAVEL_ROUTE_CACHE=N
 ```
 
 - `LARAVEL_PERSIST_STORAGE=Y` keeps Laravel storage outside individual releases and links it into each build.
-- `LARAVEL_MIGRATE=Y` runs migrations with `--force` before application switch.
+- `LARAVEL_MIGRATE=Y` runs `php artisan migrate --force` before application switch.
+- `LARAVEL_SEED=Y` runs `php artisan db:seed --force` after migrations. Enable this only when the application's default seeder is intentionally safe and idempotent on every deployment.
+- `LARAVEL_FILAMENT_ASSETS=Y` runs `php artisan filament:assets` before activation and is useful for Filament applications that publish assets into `public/`.
 - `LARAVEL_CONFIG_CACHE=Y` builds Laravel's configuration cache.
 - `LARAVEL_ROUTE_CACHE=Y` should be enabled only when every route is compatible with route caching.
 
-The framework does not run `db:seed` automatically.
+The execution order is:
+
+```text
+migrate
+optional db:seed
+optimize:clear
+optional filament:assets
+config:cache
+optional route:cache
+```
+
+`LARAVEL_SEED` defaults to `N` so existing applications do not begin mutating data merely because the framework was upgraded.
 
 ## Notifications
 

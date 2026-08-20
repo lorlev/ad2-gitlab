@@ -27,6 +27,14 @@ Use IAM roles:
 
 Do not store `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY` in GitLab variables or server `.env` files for this architecture.
 
+## Shared CodeBuild role boundary
+
+A shared CodeBuild service role reduces IAM duplication but increases the blast radius of that role. Every build project using it receives the same AWS permissions.
+
+Use a shared role only when the grouped projects intentionally share the same operational trust boundary. Separate roles are appropriate when applications must not be able to access each other's S3 prefixes, deployment instances or other AWS resources.
+
+AWS currently documents a maximum of 10 CodeBuild projects per service role. Use additional shared roles when the project count exceeds that limit.
+
 ## Least-privilege SSM execution
 
 Prefer the custom document:
@@ -36,8 +44,6 @@ AD2-AutoDeploy
 ```
 
 over permission to invoke `AWS-RunShellScript` from CI.
-
-The custom document constrains inputs and exposes only the deployment operation required by the pipeline.
 
 Recommended IAM restriction:
 
@@ -62,8 +68,6 @@ CommitSha     -> exactly 40 lowercase hexadecimal characters
 
 This reduces command-injection risk and prevents CI from selecting arbitrary filesystem paths.
 
-Use a current SSM Agent that supports environment-variable interpolation.
-
 ## S3 release security
 
 The artifact bucket contains application code and a generated application `.env`.
@@ -72,10 +76,10 @@ Required controls:
 
 - Block public access.
 - Use server-side encryption.
-- Give CodeBuild access only to the project/environment prefix it writes.
+- Give CodeBuild access only to the project/environment prefixes it is trusted to write, or to a shared bucket only when projects intentionally share that boundary.
 - Give EC2 read access only to prefixes it deploys.
 - Do not log `.env` contents.
-- Do not expose S3 object URLs publicly.
+- Do not expose the artifact bucket through a public website endpoint.
 
 For environments with stricter compliance requirements, use KMS-backed encryption and tighter key policies.
 
@@ -90,19 +94,34 @@ Use:
 - protected variables/branches for production;
 - separate production credentials from test credentials.
 
-Do not print variable values during `set -x` debugging.
+Do not print variable values during debugging.
+
+## Server-local secrets
+
+The framework's local `.env` can contain notification credentials and other operational secrets.
+
+Protect it:
+
+```bash
+chown root:root /datastore/web/test.example.com/auto.deploy/.env
+chmod 600 /datastore/web/test.example.com/auto.deploy/.env
+```
+
+If a token or password is exposed in chat, logs, screenshots or source control, rotate it instead of relying on deletion of the copied text.
 
 ## Application-side safety controls
 
 A test environment may still be connected to real external providers. Applications that can send email/SMS, charge payments, modify production integrations or trigger irreversible external actions should implement explicit non-production safety controls.
 
-Validate those controls in the build job before producing a deployable artifact.
+Validate those controls before producing a deployable artifact.
 
 ## Database change safety
 
-`ad2-gitlab` can roll back the application symlink after a failed activation, but it does not automatically reverse migrations.
+`ad2-gitlab` can roll back the application symlink after a failed activation, but it does not automatically reverse migrations or seed operations.
 
-Therefore schema changes should follow expand/contract or another backward-compatible migration strategy:
+Therefore schema/data changes should remain compatible with the previous application release whenever rollback is required.
+
+For schema changes, use expand/contract or another backward-compatible migration strategy:
 
 1. add new nullable/compatible schema first;
 2. deploy code that can work with old and new schema;
@@ -111,9 +130,19 @@ Therefore schema changes should follow expand/contract or another backward-compa
 
 Do not rely on automatic `migrate:rollback` during deployment failure.
 
-## Never auto-seed production data
+## Seeding safety
 
-The Laravel deployment module does not run `db:seed` automatically. Keep it that way unless a specific application has an explicitly reviewed, idempotent seed procedure.
+`LARAVEL_SEED` defaults to `N`.
+
+Enable it only for applications whose normal `DatabaseSeeder` is explicitly designed to be repeat-safe and idempotent on every deployment. Avoid plain duplicate-producing inserts, destructive resets, demo data and environment-specific test fixtures in a seeder enabled for production.
+
+A safe deployment seeder should converge the database toward the required state rather than assuming an empty database.
+
+## Trusted proxy safety
+
+When Laravel is behind AWS ALB and Nginx, it can trust `Request::HEADER_X_FORWARDED_AWS_ELB` so generated URLs preserve the original HTTPS scheme.
+
+If the application uses `at: '*'`, ensure the backend is reachable only through the intended proxy/load-balancer path. Octane should bind to loopback/private interfaces rather than a public listener.
 
 ## Production separation
 
@@ -124,7 +153,7 @@ Production should use its own:
 - server root;
 - S3 prefix;
 - framework `.env`;
-- systemd unit;
+- Octane instance configuration;
 - health URL;
 - database/schema/credentials;
 - approval policy as required.

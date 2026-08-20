@@ -26,7 +26,6 @@ A successful deploy ends with:
 Status: Success
 Response code: 0
 Deployment SUCCEEDED
-External health check: OK
 ```
 
 ## Verify the active release
@@ -44,7 +43,7 @@ The result should be:
 Check service and local application health:
 
 ```bash
-systemctl --no-pager --full status example-app-test.service
+systemctl --no-pager --full status octane@example-app-test.service
 curl -fsS http://127.0.0.1:8001/up
 ```
 
@@ -62,7 +61,37 @@ Re-running deployment for the currently active commit is safe. Expected output:
 Commit already deployed: <sha>
 ```
 
-The framework should not download the artifact, rerun migrations or restart the service in this case.
+The framework should not download the artifact, rerun migrations/seeders or restart the service in this case.
+
+## Laravel seeding policy
+
+`LARAVEL_SEED` is opt-in.
+
+Default:
+
+```text
+LARAVEL_SEED=N
+```
+
+Enable:
+
+```text
+LARAVEL_SEED=Y
+```
+
+only when the application's `DatabaseSeeder` is deliberately safe to run repeatedly. Seeders used on every deployment should be idempotent, for example by using `updateOrCreate`, `firstOrCreate`, `upsert`, or equivalent application logic.
+
+With seeding enabled, the framework runs:
+
+```bash
+php artisan db:seed --force
+```
+
+immediately after successful migrations and before cache/asset preparation.
+
+Do not put demo/test-only data or destructive reset logic in a seeder that is enabled for production deployment.
+
+One-time bootstrap operations such as creating the first privileged account are better treated as explicit operational actions unless the project intentionally includes them in an idempotent deployment seeder.
 
 ## Roll back application code
 
@@ -81,7 +110,7 @@ aws ssm send-command \
 
 ### Database warning
 
-Application rollback does **not** undo database migrations. A previous application release must remain compatible with all schema changes already applied. See [Security](security.md#database-change-safety).
+Application rollback does **not** undo database migrations or seeding. A previous application release must remain compatible with all database changes already applied. See [Security](security.md#database-change-safety).
 
 ## Framework update behavior
 
@@ -102,6 +131,8 @@ Before publishing a framework change:
 3. test both successful and failed deployment paths;
 4. verify an existing installation can self-update without changing its local `.env`.
 
+New lifecycle options should default to disabled when enabling them automatically could change existing application behavior. `LARAVEL_SEED=N` and `LARAVEL_FILAMENT_ASSETS=N` follow this rule.
+
 ## Build retention
 
 `BUILDS_COUNT` controls local build retention. S3 retention is independent; use S3 lifecycle/versioning policy when required.
@@ -110,42 +141,74 @@ Keep enough previous releases to support operational rollback while avoiding unl
 
 ## Logs and diagnostics
 
-Primary operational evidence comes from:
+Recommended application deployment log layout:
 
-- GitLab job log;
-- SSM `GetCommandInvocation` stdout/stderr;
-- `systemctl status` and `journalctl` for the application service;
-- Nginx access/error logs;
-- application logs in persistent storage.
+```text
+/datastore/web/test.example.com/server.logs/
+├── access.log
+├── error.log
+├── artisan.output.log
+└── octane.log
+```
 
-Useful commands:
+Use:
 
 ```bash
-journalctl -u example-app-test.service -n 200 --no-pager
-systemctl status example-app-test.service --no-pager
-nginx -t
+tail -f /datastore/web/test.example.com/server.logs/octane.log
+tail -f /datastore/web/test.example.com/server.logs/artisan.output.log
+systemctl status octane@example-app-test.service --no-pager
 readlink -f /datastore/web/test.example.com/htdocs
 ls -lah /datastore/web/test.example.com/builds
+nginx -t
 ```
+
+SSM stdout/stderr and the GitLab job log remain the primary deployment result. Persistent server logs provide historical runtime and Artisan details.
+
+Configure log rotation for `octane.log`, `artisan.output.log`, and Nginx logs so long-running applications do not grow files without limit.
+
+## Manage all Octane instances
+
+List template instances:
+
+```bash
+systemctl list-units 'octane@*' --no-pager
+```
+
+Check a specific application:
+
+```bash
+systemctl status octane@example-app-test.service --no-pager
+```
+
+Restart only one application:
+
+```bash
+systemctl restart octane@example-app-test.service
+```
+
+Each application's project directory, port and worker counts are stored in its `/etc/octane/<instance>.env` file.
 
 ## Acceptance checklist
 
 The environment is considered commissioned when all items pass:
 
-- [ ] EC2 can reach RDS without public database exposure.
+- [ ] EC2 can reach its database without public database exposure.
 - [ ] EC2 is an active SSM managed node.
 - [ ] S3 bucket is private and encrypted.
 - [ ] EC2 role can read only required deployment artifacts.
 - [ ] CodeBuild role can write/verify required artifacts.
+- [ ] Shared CodeBuild roles are used only inside an intentional trust boundary.
 - [ ] CodeBuild role can invoke only the intended deployment document/instance.
 - [ ] CodeBuild runner starts from GitLab with the configured tag.
 - [ ] Build and server use the same PHP major/minor.
 - [ ] `release.tar.gz` and `.env` are uploaded under the commit SHA.
 - [ ] `AD2-AutoDeploy` succeeds manually.
 - [ ] `htdocs` points to the requested build.
-- [ ] application service is active.
+- [ ] `octane@<instance>.service` is active.
 - [ ] local `/up` returns success.
 - [ ] external HTTPS health returns success.
+- [ ] Laravel generates HTTPS URLs correctly behind the ALB.
 - [ ] same-SHA deployment exits as already deployed.
-- [ ] automatic GitLab build → SSM deploy succeeds.
+- [ ] automatic GitLab build -> SSM deploy succeeds.
 - [ ] no static AWS access keys exist in GitLab or `auto.deploy/.env`.
+- [ ] notification and application secrets are not present in source control or logs.
