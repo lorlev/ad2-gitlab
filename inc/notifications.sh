@@ -27,13 +27,27 @@ notif_deploy_result() {
     local duration="$2"
     local rollback="$3"
 
+    local status_icon
+
+    case "$status" in
+        SUCCEEDED)
+            status_icon="🟢"
+            ;;
+        FAILED)
+            status_icon="🔴"
+            ;;
+        *)
+            status_icon="🟡"
+            ;;
+    esac
+
     notif_send "$(cat <<EOF
 <b>DEPLOYMENT RESULT</b>
 ══════════════════════════════════════
 
 <b>Project:</b> $(notif_escape "${PROJECT:-unknown}")
 <b>Environment:</b> $(notif_escape "${ENVIRONMENT:-unknown}")
-<b>Status:</b> $(notif_escape "$status")
+<b>Status:</b> ${status_icon} <b>$(notif_escape "$status")</b>
 <b>Commit:</b> <code>$(notif_escape "$SHA")</code>
 <b>Duration:</b> ${duration}s
 <b>Rollback:</b> $(notif_escape "$rollback")
