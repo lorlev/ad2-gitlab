@@ -94,7 +94,7 @@ InitPaths() {
 		"$logs_dir"
 }
 
-LoadModules() {
+LoadNotifications() {
 	source "$local_path/inc/notifications.sh"
 
 	if IsYes "${NOTIF:-N}"; then
@@ -115,6 +115,10 @@ LoadModules() {
 			return 0
 		}
 	fi
+}
+
+LoadModules() {
+	LoadNotifications
 
 	local tech_file
 	tech_file="$local_path/tech/${TECH:-generic}.sh"
