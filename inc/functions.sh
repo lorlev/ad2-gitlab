@@ -245,32 +245,59 @@ SwitchHtdocs() {
 }
 
 RestartService() {
-	if [ -z "${SERVICE:-}" ]; then
-		OutputLog "No SERVICE configured. Restart skipped."
+	local -a services=()
+	local -a additional_services=()
+	local service
+
+	if [ -n "${SERVICE:-}" ]; then
+		services+=("$SERVICE")
+	fi
+
+	if [ -n "${ADDITIONAL_SERVICES:-}" ]; then
+		read -r -a additional_services <<< "$ADDITIONAL_SERVICES"
+		services+=("${additional_services[@]}")
+	fi
+
+	if [ "${#services[@]}" -eq 0 ]; then
+		OutputLog "No services configured. Restart skipped."
 		return 0
 	fi
 
-	OutputLog "Restarting service: $SERVICE"
+	for service in "${services[@]}"; do
 
-	systemctl restart "$SERVICE"
+		OutputLog "Restarting service: $service"
 
-	if ! systemctl is-active \
-		--quiet \
-		"$SERVICE"; then
+		systemctl restart "$service"
 
-		echo "ERROR: service is not active: $SERVICE"
-		return 1
-	fi
+		if ! systemctl is-active \
+			--quiet \
+			"$service"; then
 
-	OutputLog "Service active: $SERVICE"
+			echo "ERROR: service is not active: $service"
+			return 1
+		fi
+
+		OutputLog "Service active: $service"
+	done
 }
 
 StopService() {
-	if [ -z "${SERVICE:-}" ]; then
-		return 0
+	local -a services=()
+	local -a additional_services=()
+	local service
+
+	if [ -n "${SERVICE:-}" ]; then
+		services+=("$SERVICE")
 	fi
 
-	systemctl stop "$SERVICE"
+	if [ -n "${ADDITIONAL_SERVICES:-}" ]; then
+		read -r -a additional_services <<< "$ADDITIONAL_SERVICES"
+		services+=("${additional_services[@]}")
+	fi
+
+	for service in "${services[@]}"; do
+		systemctl stop "$service"
+	done
 }
 
 HealthCheck() {
