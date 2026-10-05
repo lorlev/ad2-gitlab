@@ -125,11 +125,11 @@ TechBeforeSwitch() {
 			--force
 	fi
 
-	OutputLog "Laravel optimize:clear"
+	OutputLog "Laravel view:clear"
 
 	RunArtisan \
 		"$path" \
-		optimize:clear
+		view:clear
 
 	if IsYes "${LARAVEL_FILAMENT_ASSETS:-N}"; then
 		OutputLog "Laravel filament:assets"
