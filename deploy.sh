@@ -42,7 +42,12 @@ build_path="$builds_path/$SHA"
 temp_path="$builds_path/.${SHA}.tmp"
 archive_path="$builds_path/.${SHA}.tar.gz"
 
-CURRENT="$(readlink -f "$htdocs_path" 2>/dev/null || true)"
+CURRENT=""
+
+if [ -L "$htdocs_path" ] && [ -d "$htdocs_path" ]; then
+	CURRENT="$(readlink -f "$htdocs_path" 2>/dev/null || true)"
+fi
+
 SWITCHED=0
 START_TIME="$(date +%s)"
 

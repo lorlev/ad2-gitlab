@@ -348,9 +348,9 @@ RollbackTo() {
 
 	TechRollback "$target" || true
 
-	RestartService
+	RestartService || return 1
 
-	HealthCheck
+	HealthCheck || return 1
 
 	return 0
 }
